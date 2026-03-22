@@ -172,32 +172,10 @@ To get your chat ID: send `/chatid` to your bot on Telegram after starting the s
 
 The restart command is too long to type reliably. Create a script in Termux home once.
 
-Write this file to `~/restart-nc.sh` on the Android device (easiest: create it in a text
-editor on Mac, then SCP it over):
+The scripts live in `scripts/` in the repo. SCP them to the device from Mac:
 
 ```bash
-#!/data/data/com.termux/files/usr/bin/bash
-
-# Kill existing session and processes
-tmux kill-session -t nc 2>/dev/null
-sleep 1
-proot-distro login ubuntu -- bash -c "pkill -f 'node dist/index.js' 2>/dev/null; sqlite3 /home/nanoclaw/nanoclaw-android/store/messages.db 'DELETE FROM sessions;'"
-sleep 2
-
-# Start NanoClaw
-tmux new-session -d -s nc "proot-distro login ubuntu -- su nanoclaw -s /bin/bash -c 'cd /home/nanoclaw/nanoclaw-android && CREDENTIAL_PROXY_PORT=3002 node dist/index.js >> /tmp/nc.log 2>&1'"
-
-# Watchdog: second tmux window, checks every 5 min, restarts if NanoClaw is dead
-tmux new-window -t nc -n watchdog "while true; do sleep 300; proot-distro login ubuntu -- bash -c \"pgrep -f 'node dist/index.js' > /dev/null || (echo [\$(date)] Watchdog: restarting >> /tmp/nc.log && su nanoclaw -s /bin/bash -c 'cd /home/nanoclaw/nanoclaw-android && CREDENTIAL_PROXY_PORT=3002 node dist/index.js >> /tmp/nc.log 2>&1')\"; done"
-
-echo "Done. Checking tmux..."
-tmux ls
-```
-
-SCP the script to the device:
-
-```bash
-scp -P 8022 restart-nc.sh ANDROID_IP:~/restart-nc.sh
+scp -P 8022 scripts/restart-nc.sh ANDROID_IP:~/restart-nc.sh
 ssh -p 8022 ANDROID_IP 'chmod +x ~/restart-nc.sh'
 ```
 
@@ -209,16 +187,11 @@ up automatically without any manual intervention.
 
 Install **Termux:Boot** from F-Droid (same source as Termux). Open the app once to activate it.
 
-Then create the boot script:
+Then SCP the boot script from the repo and put it in place:
 
 ```bash
-ssh -p 8022 ANDROID_IP 'mkdir -p ~/.termux/boot && cat > ~/.termux/boot/start-nanoclaw.sh << '"'"'EOF'"'"'
-#!/data/data/com.termux/files/usr/bin/bash
-sleep 30
-termux-wake-lock
-~/restart-nc.sh
-EOF
-chmod +x ~/.termux/boot/start-nanoclaw.sh'
+scp -P 8022 scripts/termux-boot-start-nanoclaw.sh ANDROID_IP:~/.termux/boot/start-nanoclaw.sh
+ssh -p 8022 ANDROID_IP 'chmod +x ~/.termux/boot/start-nanoclaw.sh'
 ```
 
 The `sleep 30` gives the network time to connect before NanoClaw starts.
