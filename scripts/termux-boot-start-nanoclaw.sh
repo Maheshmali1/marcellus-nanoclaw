@@ -4,5 +4,6 @@
 # Auto-starts NanoClaw 30 seconds after Android boots.
 
 sleep 30
+sshd
 termux-wake-lock
 ~/restart-nc.sh
