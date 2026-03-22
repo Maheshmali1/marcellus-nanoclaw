@@ -41,11 +41,13 @@ No Docker. No containers. All processes run natively on the host.
 
 ### What Changed (3 files)
 
-| File | Change |
-|------|--------|
-| `container/agent-runner/src/index.ts` | Replaced 5 hardcoded `/workspace/*` paths with env vars (`WORKSPACE_GROUP`, `WORKSPACE_IPC`, `WORKSPACE_GLOBAL`, `WORKSPACE_EXTRA`) |
-| `src/container-runner.ts` | Replaced `docker run` spawn with direct `node container/agent-runner/dist/index.js`. Credentials injected from `.env` directly into child process env. |
-| `src/container-runtime.ts` | Made `ensureContainerRuntimeRunning()` and `cleanupOrphans()` no-ops — Docker check skipped entirely. |
+
+| File                                  | Change                                                                                                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `container/agent-runner/src/index.ts` | Replaced 5 hardcoded `/workspace/*` paths with env vars (`WORKSPACE_GROUP`, `WORKSPACE_IPC`, `WORKSPACE_GLOBAL`, `WORKSPACE_EXTRA`)                    |
+| `src/container-runner.ts`             | Replaced `docker run` spawn with direct `node container/agent-runner/dist/index.js`. Credentials injected from `.env` directly into child process env. |
+| `src/container-runtime.ts`            | Made `ensureContainerRuntimeRunning()` and `cleanupOrphans()` no-ops — Docker check skipped entirely.                                                  |
+
 
 ### Env Vars Passed to Agent Process
 
@@ -69,6 +71,7 @@ On Android we replicate this by creating a `nanoclaw` Linux user and running eve
 ## Prerequisites
 
 On the Android device:
+
 1. **Termux** installed from F-Droid (not Play Store — Play Store version is outdated)
 2. **SSH server** running in Termux: `pkg install openssh && sshd`
 3. **proot-distro** installed: `pkg install proot-distro`
@@ -76,6 +79,7 @@ On the Android device:
 5. **tmux** in Termux: `pkg install tmux`
 
 Inside proot-distro Ubuntu:
+
 ```bash
 apt-get update
 apt-get install -y curl git sqlite3
@@ -166,24 +170,62 @@ To get your chat ID: send `/chatid` to your bot on Telegram after starting the s
 
 ### 6. Create the restart script
 
-The restart command is too long to type reliably. Create a script in Termux home once:
+The restart command is too long to type reliably. Create a script in Termux home once.
+
+Write this file to `~/restart-nc.sh` on the Android device (easiest: create it in a text
+editor on Mac, then SCP it over):
 
 ```bash
-# Run from Mac via SSH
-ssh -p 8022 ANDROID_IP 'cat > ~/restart-nc.sh << '"'"'EOF'"'"'
 #!/data/data/com.termux/files/usr/bin/bash
+
+# Kill existing session and processes
 tmux kill-session -t nc 2>/dev/null
 sleep 1
-proot-distro login ubuntu -- bash -c "pkill -f '"'"'node dist/index.js'"'"' 2>/dev/null; sqlite3 /home/nanoclaw/nanoclaw-android/store/messages.db '"'"'DELETE FROM sessions;'"'"'"
+proot-distro login ubuntu -- bash -c "pkill -f 'node dist/index.js' 2>/dev/null; sqlite3 /home/nanoclaw/nanoclaw-android/store/messages.db 'DELETE FROM sessions;'"
 sleep 2
-tmux new-session -d -s nc "proot-distro login ubuntu -- su nanoclaw -s /bin/bash -c '"'"'cd /home/nanoclaw/nanoclaw-android && CREDENTIAL_PROXY_PORT=3002 node dist/index.js >> /tmp/nc.log 2>&1'"'"'"
+
+# Start NanoClaw
+tmux new-session -d -s nc "proot-distro login ubuntu -- su nanoclaw -s /bin/bash -c 'cd /home/nanoclaw/nanoclaw-android && CREDENTIAL_PROXY_PORT=3002 node dist/index.js >> /tmp/nc.log 2>&1'"
+
+# Watchdog: second tmux window, checks every 5 min, restarts if NanoClaw is dead
+tmux new-window -t nc -n watchdog "while true; do sleep 300; proot-distro login ubuntu -- bash -c \"pgrep -f 'node dist/index.js' > /dev/null || (echo [\$(date)] Watchdog: restarting >> /tmp/nc.log && su nanoclaw -s /bin/bash -c 'cd /home/nanoclaw/nanoclaw-android && CREDENTIAL_PROXY_PORT=3002 node dist/index.js >> /tmp/nc.log 2>&1')\"; done"
+
 echo "Done. Checking tmux..."
 tmux ls
-EOF
-chmod +x ~/restart-nc.sh'
 ```
 
-### 7. Start the service
+SCP the script to the device:
+
+```bash
+scp -P 8022 restart-nc.sh ANDROID_IP:~/restart-nc.sh
+ssh -p 8022 ANDROID_IP 'chmod +x ~/restart-nc.sh'
+```
+
+The watchdog runs in a second tmux window (`watchdog`) and checks every 5 minutes whether
+`node dist/index.js` is still running. If not, it logs the restart and brings NanoClaw back
+up automatically without any manual intervention.
+
+### 7. Set up auto-start on reboot (Termux:Boot)
+
+Install **Termux:Boot** from F-Droid (same source as Termux). Open the app once to activate it.
+
+Then create the boot script:
+
+```bash
+ssh -p 8022 ANDROID_IP 'mkdir -p ~/.termux/boot && cat > ~/.termux/boot/start-nanoclaw.sh << '"'"'EOF'"'"'
+#!/data/data/com.termux/files/usr/bin/bash
+sleep 30
+termux-wake-lock
+~/restart-nc.sh
+EOF
+chmod +x ~/.termux/boot/start-nanoclaw.sh'
+```
+
+The `sleep 30` gives the network time to connect before NanoClaw starts.
+
+After this, NanoClaw survives Android reboots automatically.
+
+### 8. Start the service
 
 ```bash
 # Enable wake lock so Android doesn't kill Termux in background
@@ -232,10 +274,20 @@ ssh -p 8022 ANDROID_IP '~/restart-nc.sh'
 ```
 
 This kills any running instance, clears stale session IDs, waits, then starts fresh.
+Also starts a watchdog window that auto-restarts NanoClaw if it crashes.
 Script must be created first — see step 6 in First-Time Setup above.
 
 > **Note:** `DELETE FROM sessions` only removes Claude session pointers, not message
 > history. All past messages and agent memory are preserved across restarts.
+
+### Check if watchdog is running
+
+```bash
+ssh -p 8022 ANDROID_IP 'tmux ls'
+# Should show two windows: nc and watchdog
+```
+
+If you only see `nc: 1 windows`, the watchdog isn't running — re-run `~/restart-nc.sh`.
 
 ### Check logs
 
@@ -281,20 +333,23 @@ ssh -p 8022 ANDROID_IP 'proot-distro login ubuntu -- bash -c "sqlite3 /home/nano
 ### What Can Be Lost
 
 All data lives inside Termux's app data directory:
+
 ```
 /data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu/home/nanoclaw/nanoclaw-android/
 ```
 
-| Event | Data Safe? |
-|-------|-----------|
-| Android reboot | ✅ Yes |
-| Termux crash | ✅ Yes |
-| NanoClaw crash | ✅ Yes — SQLite is transactional |
-| tmux session killed | ✅ Yes |
-| **Termux "Clear Data" / uninstall** | ❌ **Total loss** |
-| **Hardware failure (old device)** | ❌ **Total loss** |
-| **proot-distro reinstall** | ❌ **Total loss** |
-| Android storage full during write | ⚠️ Possible corruption |
+
+| Event                               | Data Safe?                      |
+| ----------------------------------- | ------------------------------- |
+| Android reboot                      | ✅ Yes                           |
+| Termux crash                        | ✅ Yes                           |
+| NanoClaw crash                      | ✅ Yes — SQLite is transactional |
+| tmux session killed                 | ✅ Yes                           |
+| **Termux "Clear Data" / uninstall** | ❌ **Total loss**                |
+| **Hardware failure (old device)**   | ❌ **Total loss**                |
+| **proot-distro reinstall**          | ❌ **Total loss**                |
+| Android storage full during write   | ⚠️ Possible corruption          |
+
 
 Android's cloud backup excludes Termux app data by default — there is **no automatic backup**.
 
@@ -343,14 +398,16 @@ sqlite3 store/messages.db "DELETE FROM sessions;"
 
 ## Telegram Configuration
 
-| Field | Value |
-|-------|-------|
-| Bot name | @mahi_nanobot |
-| Bot token | stored in `.env` as `TELEGRAM_BOT_TOKEN` |
-| Chat JID | `tg:<your_chat_id>` |
-| Trigger | `@mahi` |
-| Folder | `telegram_main` |
-| Is main channel | yes |
+
+| Field           | Value                                    |
+| --------------- | ---------------------------------------- |
+| Bot name        | @mahi_nanobot                            |
+| Bot token       | stored in `.env` as `TELEGRAM_BOT_TOKEN` |
+| Chat JID        | `tg:<your_chat_id>`                      |
+| Trigger         | `@mahi`                                  |
+| Folder          | `telegram_main`                          |
+| Is main channel | yes                                      |
+
 
 > Only ONE instance should run at a time. If both Mac and Android are running with the same
 > bot token, they will fight over messages and both will behave erratically.
@@ -364,6 +421,7 @@ sqlite3 store/messages.db "DELETE FROM sessions;"
 - Upstream: the original NanoClaw repo
 
 The `android` branch contains:
+
 - All no-docker source changes
 - Pre-compiled `dist/` (main project)
 - Pre-compiled `container/agent-runner/dist/` (agent runner)
@@ -396,14 +454,16 @@ git push origin android
 `ENOENT rename` errors because proot doesn't support cross-directory rename syscalls reliably.
 
 **Solutions tried:**
+
 - `--cache /tmp/npm-cache` → still crashes (sharp)
 - `--no-cache` → still ENOENT
 - `TMPDIR=/root npm install` → helped but sharp still segfaulted
-- **`--omit=optional --ignore-scripts`** → works, skips sharp and other optional native deps
+- `**--omit=optional --ignore-scripts`** → works, skips sharp and other optional native deps
 
 ### Claude refuses --allow-dangerously-skip-permissions as root
 
 **Problem:** Claude CLI returns:
+
 ```
 --dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons
 ```
@@ -418,6 +478,7 @@ The main NanoClaw process and agent-runner were running as root inside proot-dis
 has its own `package.json` and `node_modules` separate from the root project.
 
 **Solution:** Either:
+
 1. Run `npm install` inside `container/agent-runner/` on Android (use `--omit=optional --ignore-scripts`)
 2. Or ship `node_modules` from Mac in the zip transfer (fastest — avoids all install issues)
 
@@ -428,6 +489,7 @@ session IDs that reference claude conversation history that only exists on Mac.
 Claude returns: `No conversation found with session ID: <uuid>`
 
 **Solution:**
+
 ```bash
 sqlite3 store/messages.db "DELETE FROM sessions;"
 ```
@@ -438,6 +500,7 @@ sqlite3 store/messages.db "DELETE FROM sessions;"
 This happens when npm install is interrupted mid-download.
 
 **Solution:**
+
 ```bash
 npm install whatwg-url --ignore-scripts --cache /tmp/npm-cache
 # or full reinstall:
@@ -471,12 +534,14 @@ tmux new-session -d -s nc "proot-distro login ubuntu -- su nanoclaw ..."
 and pushed to a public GitHub repo.
 
 **Actions taken:**
+
 1. Revoked the token immediately via BotFather (`/revoke`)
 2. Generated a new token
 3. Rewrote git history with `git filter-branch` to remove the token from all commits
 4. Force-pushed the cleaned branch: `git push --force origin android`
 
 **Prevention:** Always scan before pushing:
+
 ```bash
 git diff HEAD | grep -iE "token|secret|key|password|sk-ant"
 ```
@@ -485,15 +550,17 @@ git diff HEAD | grep -iE "token|secret|key|password|sk-ant"
 
 ## Files You Should Know About
 
-| Path | Purpose |
-|------|---------|
-| `.env` | Secrets — never commit |
-| `store/messages.db` | SQLite: messages, sessions, registered groups |
-| `/tmp/nc.log` | Runtime log (inside proot Ubuntu) |
-| `groups/telegram_main/` | Agent working directory, memory, conversation history |
-| `data/sessions/telegram_main/.claude/` | Claude session files (HOME for the agent) |
-| `data/ipc/telegram_main/` | IPC between main process and agent |
-| `container/agent-runner/dist/index.js` | The agent that runs claude per message |
+
+| Path                                   | Purpose                                               |
+| -------------------------------------- | ----------------------------------------------------- |
+| `.env`                                 | Secrets — never commit                                |
+| `store/messages.db`                    | SQLite: messages, sessions, registered groups         |
+| `/tmp/nc.log`                          | Runtime log (inside proot Ubuntu)                     |
+| `groups/telegram_main/`                | Agent working directory, memory, conversation history |
+| `data/sessions/telegram_main/.claude/` | Claude session files (HOME for the agent)             |
+| `data/ipc/telegram_main/`              | IPC between main process and agent                    |
+| `container/agent-runner/dist/index.js` | The agent that runs claude per message                |
+
 
 ---
 
@@ -501,11 +568,14 @@ git diff HEAD | grep -iE "token|secret|key|password|sk-ant"
 
 Both use the same Telegram bot so only one should be active at a time.
 
-| | Mac | Android |
-|--|-----|---------|
-| Location | `~/Desktop/ai-experiments/nanoclaw` | `/home/nanoclaw/nanoclaw-android` |
-| Credential proxy port | 3001 | 3002 |
-| Container mode | Docker | Direct Node.js |
-| Process manager | launchd | tmux in Termux |
-| Start | `launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist` | see restart command above |
-| Stop | `launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist` | `tmux kill-server` |
+
+|                       | Mac                                                          | Android                           |
+| --------------------- | ------------------------------------------------------------ | --------------------------------- |
+| Location              | `~/Desktop/ai-experiments/nanoclaw`                          | `/home/nanoclaw/nanoclaw-android` |
+| Credential proxy port | 3001                                                         | 3002                              |
+| Container mode        | Docker                                                       | Direct Node.js                    |
+| Process manager       | launchd                                                      | tmux + watchdog + Termux:Boot     |
+| Start                 | `launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist`   | see restart command above         |
+| Stop                  | `launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist` | `tmux kill-server`                |
+
+
