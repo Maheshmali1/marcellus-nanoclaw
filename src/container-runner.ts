@@ -214,7 +214,10 @@ function buildDirectEnv(
   const groupSessionsDir = path.join(DATA_DIR, 'sessions', group.folder);
 
   // Read credentials directly from .env (not in process.env by design)
-  const credentials = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+  const credentials = readEnvFile([
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_API_KEY',
+  ]);
 
   const env: Record<string, string | undefined> = {
     ...process.env,
