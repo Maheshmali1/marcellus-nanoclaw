@@ -2,15 +2,13 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, exec, spawn } from 'child_process';
+import { ChildProcess, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 import {
-  CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
-  CREDENTIAL_PROXY_PORT,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
@@ -18,14 +16,7 @@ import {
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
-import {
-  CONTAINER_HOST_GATEWAY,
-  CONTAINER_RUNTIME_BIN,
-  hostGatewayArgs,
-  readonlyMountArgs,
-  stopContainer,
-} from './container-runtime.js';
-import { detectAuthMode } from './credential-proxy.js';
+import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -212,56 +203,34 @@ function buildVolumeMounts(
   return mounts;
 }
 
-function buildContainerArgs(
-  mounts: VolumeMount[],
-  containerName: string,
-): string[] {
-  const args: string[] = ['run', '-i', '--rm', '--name', containerName];
+function buildDirectEnv(
+  group: RegisteredGroup,
+  isMain: boolean,
+): Record<string, string | undefined> {
+  const projectRoot = process.cwd();
+  const groupDir = resolveGroupFolderPath(group.folder);
+  const groupIpcDir = resolveGroupIpcPath(group.folder);
+  const globalDir = path.join(GROUPS_DIR, 'global');
+  const groupSessionsDir = path.join(DATA_DIR, 'sessions', group.folder);
 
-  // Pass host timezone so container's local time matches the user's
-  args.push('-e', `TZ=${TIMEZONE}`);
+  // Read credentials directly from .env (not in process.env by design)
+  const credentials = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
 
-  // Route API traffic through the credential proxy (containers never see real secrets)
-  args.push(
-    '-e',
-    `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
-  );
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    ...credentials,
+    WORKSPACE_GROUP: groupDir,
+    WORKSPACE_IPC: groupIpcDir,
+    WORKSPACE_GLOBAL: globalDir,
+    WORKSPACE_EXTRA: '',
+    HOME: groupSessionsDir,
+    TZ: TIMEZONE,
+  };
 
-  // Mirror the host's auth method with a placeholder value.
-  // API key mode: SDK sends x-api-key, proxy replaces with real key.
-  // OAuth mode:   SDK exchanges placeholder token for temp API key,
-  //               proxy injects real OAuth token on that exchange request.
-  const authMode = detectAuthMode();
-  if (authMode === 'api-key') {
-    args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
-  } else {
-    args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
-  }
+  // Remove credential proxy redirect — real credentials injected directly above
+  delete env.ANTHROPIC_BASE_URL;
 
-  // Runtime-specific args for host gateway resolution
-  args.push(...hostGatewayArgs());
-
-  // Run as host user so bind-mounted files are accessible.
-  // Skip when running as root (uid 0), as the container's node user (uid 1000),
-  // or when getuid is unavailable (native Windows without WSL).
-  const hostUid = process.getuid?.();
-  const hostGid = process.getgid?.();
-  if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
-    args.push('--user', `${hostUid}:${hostGid}`);
-    args.push('-e', 'HOME=/home/node');
-  }
-
-  for (const mount of mounts) {
-    if (mount.readonly) {
-      args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
-    } else {
-      args.push('-v', `${mount.hostPath}:${mount.containerPath}`);
-    }
-  }
-
-  args.push(CONTAINER_IMAGE);
-
-  return args;
+  return env;
 }
 
 export async function runContainerAgent(
@@ -275,40 +244,30 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain);
+  buildVolumeMounts(group, input.isMain); // run for side effects (creates dirs, settings.json, skills)
+  const directEnv = buildDirectEnv(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
-
-  logger.debug(
-    {
-      group: group.name,
-      containerName,
-      mounts: mounts.map(
-        (m) =>
-          `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
-      ),
-      containerArgs: containerArgs.join(' '),
-    },
-    'Container mount configuration',
+  const agentRunnerPath = path.join(
+    process.cwd(),
+    'container',
+    'agent-runner',
+    'dist',
+    'index.js',
   );
 
   logger.info(
-    {
-      group: group.name,
-      containerName,
-      mountCount: mounts.length,
-      isMain: input.isMain,
-    },
-    'Spawning container agent',
+    { group: group.name, processName: containerName, isMain: input.isMain },
+    'Spawning direct agent (no-docker mode)',
   );
 
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
   return new Promise((resolve) => {
-    const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
+    const container = spawn('node', [agentRunnerPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: directEnv,
     });
 
     onProcess(container, containerName);
@@ -411,17 +370,12 @@ export async function runContainerAgent(
       timedOut = true;
       logger.error(
         { group: group.name, containerName },
-        'Container timeout, stopping gracefully',
+        'Agent timeout, stopping gracefully',
       );
-      exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
-        if (err) {
-          logger.warn(
-            { group: group.name, containerName, err },
-            'Graceful stop failed, force killing',
-          );
-          container.kill('SIGKILL');
-        }
-      });
+      container.kill('SIGTERM');
+      setTimeout(() => {
+        if (!container.killed) container.kill('SIGKILL');
+      }, 5000);
     };
 
     let timeout = setTimeout(killOnTimeout, timeoutMs);
@@ -517,17 +471,6 @@ export async function runContainerAgent(
           );
         }
         logLines.push(
-          `=== Container Args ===`,
-          containerArgs.join(' '),
-          ``,
-          `=== Mounts ===`,
-          mounts
-            .map(
-              (m) =>
-                `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
-            )
-            .join('\n'),
-          ``,
           `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
           stderr,
           ``,
@@ -539,11 +482,6 @@ export async function runContainerAgent(
           `=== Input Summary ===`,
           `Prompt length: ${input.prompt.length} chars`,
           `Session ID: ${input.sessionId || 'new'}`,
-          ``,
-          `=== Mounts ===`,
-          mounts
-            .map((m) => `${m.containerPath}${m.readonly ? ' (ro)' : ''}`)
-            .join('\n'),
           ``,
         );
       }
