@@ -164,12 +164,30 @@ npx tsx setup/index.ts --step register -- \
 
 To get your chat ID: send `/chatid` to your bot on Telegram after starting the service once.
 
-### 6. Start the service
+### 6. Create the restart script
+
+The restart command is too long to type reliably. Create a script in Termux home once:
 
 ```bash
-# From Termux (not inside proot)
-termux-wake-lock
-tmux new-session -d -s nc "proot-distro login ubuntu -- su nanoclaw -s /bin/bash -c 'cd /home/nanoclaw/nanoclaw-android && CREDENTIAL_PROXY_PORT=3002 node dist/index.js >> /tmp/nc.log 2>&1'"
+# Run from Mac via SSH
+ssh -p 8022 ANDROID_IP 'cat > ~/restart-nc.sh << '"'"'EOF'"'"'
+#!/data/data/com.termux/files/usr/bin/bash
+tmux kill-session -t nc 2>/dev/null
+sleep 1
+proot-distro login ubuntu -- bash -c "pkill -f '"'"'node dist/index.js'"'"' 2>/dev/null; sqlite3 /home/nanoclaw/nanoclaw-android/store/messages.db '"'"'DELETE FROM sessions;'"'"'"
+sleep 2
+tmux new-session -d -s nc "proot-distro login ubuntu -- su nanoclaw -s /bin/bash -c '"'"'cd /home/nanoclaw/nanoclaw-android && CREDENTIAL_PROXY_PORT=3002 node dist/index.js >> /tmp/nc.log 2>&1'"'"'"
+echo "Done. Checking tmux..."
+tmux ls
+EOF
+chmod +x ~/restart-nc.sh'
+```
+
+### 7. Start the service
+
+```bash
+# Enable wake lock so Android doesn't kill Termux in background
+ssh -p 8022 ANDROID_IP 'termux-wake-lock; ~/restart-nc.sh'
 ```
 
 ---
@@ -210,9 +228,14 @@ Then follow steps 4–6 from First-Time Setup above.
 ### Restart NanoClaw
 
 ```bash
-# From Mac via SSH (one command)
-ssh -p 8022 ANDROID_IP 'proot-distro login ubuntu -- bash -c "sqlite3 /home/nanoclaw/nanoclaw-android/store/messages.db \"DELETE FROM sessions;\"" && tmux new-session -d -s nc "proot-distro login ubuntu -- su nanoclaw -s /bin/bash -c '"'"'cd /home/nanoclaw/nanoclaw-android && CREDENTIAL_PROXY_PORT=3002 node dist/index.js >> /tmp/nc.log 2>&1'"'"'"'
+ssh -p 8022 ANDROID_IP '~/restart-nc.sh'
 ```
+
+This kills any running instance, clears stale session IDs, waits, then starts fresh.
+Script must be created first — see step 6 in First-Time Setup above.
+
+> **Note:** `DELETE FROM sessions` only removes Claude session pointers, not message
+> history. All past messages and agent memory are preserved across restarts.
 
 ### Check logs
 
