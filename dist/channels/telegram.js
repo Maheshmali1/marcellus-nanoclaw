@@ -14,12 +14,16 @@ async function sendTelegramMessage(api, chatId, text, options = {}) {
         await api.sendMessage(chatId, text, {
             ...options,
             parse_mode: 'Markdown',
+            link_preview_options: { is_disabled: true },
         });
     }
     catch (err) {
         // Fallback: send as plain text if Markdown parsing fails
         logger.debug({ err }, 'Markdown send failed, falling back to plain text');
-        await api.sendMessage(chatId, text, options);
+        await api.sendMessage(chatId, text, {
+            ...options,
+            link_preview_options: { is_disabled: true },
+        });
     }
 }
 export class TelegramChannel {
