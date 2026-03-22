@@ -253,6 +253,71 @@ ssh -p 8022 ANDROID_IP 'proot-distro login ubuntu -- bash -c "sqlite3 /home/nano
 
 ---
 
+## Data Backup
+
+### What Can Be Lost
+
+All data lives inside Termux's app data directory:
+```
+/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu/home/nanoclaw/nanoclaw-android/
+```
+
+| Event | Data Safe? |
+|-------|-----------|
+| Android reboot | ✅ Yes |
+| Termux crash | ✅ Yes |
+| NanoClaw crash | ✅ Yes — SQLite is transactional |
+| tmux session killed | ✅ Yes |
+| **Termux "Clear Data" / uninstall** | ❌ **Total loss** |
+| **Hardware failure (old device)** | ❌ **Total loss** |
+| **proot-distro reinstall** | ❌ **Total loss** |
+| Android storage full during write | ⚠️ Possible corruption |
+
+Android's cloud backup excludes Termux app data by default — there is **no automatic backup**.
+
+The Redmi Note 6 Pro is a 2018 device. NAND flash has limited write cycles. Hardware failure
+is a real possibility with no warning.
+
+### Backup to Mac via SCP
+
+Run from Mac to snapshot agent data:
+
+```bash
+# Create backup directory
+mkdir -p ~/Desktop/nanoclaw-backup
+
+# Backup agent memory and documents
+scp -r -P 8022 ANDROID_IP:"/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu/home/nanoclaw/nanoclaw-android/groups" ~/Desktop/nanoclaw-backup/
+
+# Backup SQLite database (messages, sessions, registered groups)
+scp -P 8022 ANDROID_IP:"/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu/home/nanoclaw/nanoclaw-android/store/messages.db" ~/Desktop/nanoclaw-backup/
+```
+
+Or a single dated archive (stop NanoClaw first for a clean database snapshot):
+
+```bash
+ssh -p 8022 ANDROID_IP \
+  'tar czf /tmp/nc-backup.tar.gz \
+    -C /data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu/home/nanoclaw/nanoclaw-android \
+    groups store data/sessions' \
+  && scp -P 8022 ANDROID_IP:/tmp/nc-backup.tar.gz ~/Desktop/nc-backup-$(date +%Y%m%d).tar.gz
+```
+
+### Restore from Backup
+
+```bash
+# On Android device (inside proot Ubuntu as nanoclaw)
+cd /home/nanoclaw/nanoclaw-android
+
+# Restore groups and store directories
+tar xzf /tmp/nc-backup.tar.gz
+
+# Clear stale sessions after restore (they reference the old device's Claude history)
+sqlite3 store/messages.db "DELETE FROM sessions;"
+```
+
+---
+
 ## Telegram Configuration
 
 | Field | Value |
