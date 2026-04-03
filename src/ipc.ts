@@ -5,6 +5,7 @@ import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
+import { cleanupOrphans } from './container-runtime.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
@@ -459,6 +460,44 @@ export async function processTaskIpc(
           { data },
           'Invalid register_group request - missing required fields',
         );
+      }
+      break;
+
+    case 'shutdown':
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized shutdown attempt blocked');
+        break;
+      }
+      logger.info({ sourceGroup }, 'Shutdown requested via IPC — stopping service');
+      // Send confirmation to the chat before stopping, best-effort
+      try {
+        const mainGroup = Object.values(registeredGroups).find((g) => g.isMain);
+        if (mainGroup) {
+          await deps.sendMessage(
+            Object.keys(registeredGroups).find(
+              (jid) => registeredGroups[jid] === mainGroup,
+            )!,
+            'Shutting down. Bye.',
+          );
+        }
+      } catch {
+        // best-effort — don't block shutdown
+      }
+      // Kill all running agent containers before stopping the service
+      try {
+        cleanupOrphans();
+      } catch {
+        /* best-effort */
+      }
+
+      // Detach so the process doesn't wait for systemctl to kill it
+      {
+        const { spawn } = await import('child_process');
+        const child = spawn('systemctl', ['--user', 'stop', 'nanoclaw'], {
+          detached: true,
+          stdio: 'ignore',
+        });
+        child.unref();
       }
       break;
 

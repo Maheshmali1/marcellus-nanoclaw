@@ -183,6 +183,19 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
       }
     }
 
+    // Non-main groups cannot use script scheduling (prevents prompt-injection → arbitrary shell execution)
+    if (!isMain && args.script) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Script scheduling is only available in the main group.',
+          },
+        ],
+        isError: true,
+      };
+    }
+
     // Non-main groups can only schedule for themselves
     const targetJid =
       isMain && args.target_group_jid ? args.target_group_jid : chatJid;
@@ -499,6 +512,24 @@ Use available_groups.json to find the JID for a group. The folder name must be c
           text: `Group "${args.name}" registered. It will start receiving messages immediately.`,
         },
       ],
+    };
+  },
+);
+
+server.tool(
+  'shutdown_nanoclaw',
+  'Emergency stop: gracefully shuts down the NanoClaw service on the host. A confirmation message is sent before shutdown. Main group only. Use when the user explicitly asks to stop, kill, or shut down NanoClaw.',
+  {},
+  async () => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Shutdown is only available in the main group.' }],
+        isError: true,
+      };
+    }
+    writeIpcFile(TASKS_DIR, { type: 'shutdown', timestamp: new Date().toISOString() });
+    return {
+      content: [{ type: 'text' as const, text: 'Shutdown signal sent to host.' }],
     };
   },
 );
