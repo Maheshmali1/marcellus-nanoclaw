@@ -468,7 +468,10 @@ export async function processTaskIpc(
         logger.warn({ sourceGroup }, 'Unauthorized shutdown attempt blocked');
         break;
       }
-      logger.info({ sourceGroup }, 'Shutdown requested via IPC — stopping service');
+      logger.info(
+        { sourceGroup },
+        'Shutdown requested via IPC — stopping service',
+      );
       // Send confirmation to the chat before stopping, best-effort
       try {
         const mainGroup = Object.values(registeredGroups).find((g) => g.isMain);

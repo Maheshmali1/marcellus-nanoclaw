@@ -42,7 +42,10 @@ async function sendTelegramMessage(
   } catch (err) {
     // Fallback: send as plain text if Markdown parsing fails
     logger.debug({ err }, 'Markdown send failed, falling back to plain text');
-    await api.sendMessage(chatId, text, { ...options, link_preview_options: { is_disabled: true } });
+    await api.sendMessage(chatId, text, {
+      ...options,
+      link_preview_options: { is_disabled: true },
+    });
   }
 }
 
@@ -91,7 +94,10 @@ export class TelegramChannel implements Channel {
       const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
       const resp = await fetch(fileUrl);
       if (!resp.ok) {
-        logger.warn({ fileId, status: resp.status }, 'Telegram file download failed');
+        logger.warn(
+          { fileId, status: resp.status },
+          'Telegram file download failed',
+        );
         return null;
       }
 
